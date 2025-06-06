@@ -2,6 +2,7 @@
 
 -- Crear un frame oculto para gestionar eventos del juego
 local eventFrame = CreateFrame("Frame")
+local groupGUIDToName = {}
 
 -- Registrar eventos relevantes
 eventFrame:RegisterEvent("PLAYER_LOGIN")                    -- Cuando el jugador inicia sesión (después de cargar la interfaz)
@@ -10,7 +11,8 @@ eventFrame:RegisterEvent("PLAYER_ENTERING_WORLD")           -- Carga de mundo (i
 eventFrame:RegisterEvent("ZONE_CHANGED_NEW_AREA")           -- Cambio de zona (para detectar cambios de instancia sin cargar pantalla)
 eventFrame:RegisterEvent("RAID_ROSTER_UPDATE")              -- Cambios en la composición de banda
 eventFrame:RegisterEvent("PARTY_MEMBERS_CHANGED")           -- Cambios en la composición de grupo
-eventFrame:RegisterEvent("CHAT_MSG_MONSTER_YELL")           -- Gritos de NPCs (por si aportan información sobre pulls)
+-- eventFrame:RegisterEvent("CHAT_MSG_MONSTER_YELL")           -- Gritos de NPCs (por si aportan información sobre pulls)
+
 
 -- Tablas para seguimiento de activaciones de jefes (datos persistentes en SavedVariables)
 local bossActivations = {}   -- Diccionario de jefes activados: { [nombreJefe] = nombreJugadorQueLoActivó }
@@ -41,6 +43,32 @@ local function IsBossUnit(guid)
     return false
 end
 
+function UpdateGroupGUIDMap()
+    wipe(groupGUIDToName)
+
+    if UnitInRaid("player") then
+        for i = 1, GetNumRaidMembers() do
+            local unit = "raid"..i
+            local name = GetUnitName(unit)
+            local guid = UnitGUID(unit)
+            if name and guid then
+                groupGUIDToName[guid] = name
+            end
+        end
+    else
+        for i = 1, GetNumPartyMembers() do
+            local unit = "party"..i
+            local name = GetUnitName(unit)
+            local guid = UnitGUID(unit)
+            if name and guid then
+                groupGUIDToName[guid] = name
+            end
+        end
+        -- Agregar también al jugador local
+        groupGUIDToName[UnitGUID("player")] = UnitName("player")
+    end
+end
+
 -- Definir un diálogo de confirmación estático para borrar datos, que se usará al salir de instancia/grupo
 StaticPopupDialogs["BOSSPULLTRACKER_CONFIRM_CLEAR"] = {
     text = "¿Deseas borrar la lista de activaciones de jefes guardada?",  -- Texto del cuadro de diálogo
@@ -61,9 +89,82 @@ StaticPopupDialogs["BOSSPULLTRACKER_CONFIRM_CLEAR"] = {
     preferredIndex = 3  -- Evitar cierto taint de la UI usando un índice de preferencia no usado por Blizzard
 }
 
+local provokeSpells = {
+    -- Guerrero
+    [355]   = "Taunt",                -- Provocar (taunt directo)
+    [1161]  = "Challenging Shout",    -- Grito desafiante (taunt en área)
+
+    -- Druida
+    [6795]  = "Growl",                -- Bramido (taunt directo)
+    [5209]  = "Challenging Roar",     -- Rugido desafiante (taunt en área)
+
+    -- Paladín
+    [62124] = "Hand of Reckoning",    -- Mano de expiación (taunt directo)
+    [31789] = "Righteous Defense",    -- Defensa recta (taunt hacia aliados)
+
+    -- Caballero de la Muerte
+    [49576] = "Death Grip",           -- Agarre de la muerte (taunt + atracción)
+
+    -- Cazador
+    [20736] = "Distracting Shot",     -- Disparo de distracción (taunt a distancia)
+
+    -- Mascotas de Cazador (Tenacidad)
+    [53477] = "Taunt",                -- Provocación de mascota (taunt directo)
+
+    -- Brujo (Mascota: Vacío)
+    [3716]  = "Torment",              -- Tormento (taunt del vacío)
+}
+
 -- Función global: Maneja los eventos de combate para detectar activaciones de jefes
 function OnCombatLogEvent(timestamp, subEvent, srcGUID, srcName, srcFlags, srcRaidFlags,
-                           destGUID, destName, destFlags, destRaidFlags, spellId, spellName)
+                           destGUID, destName, destFlags, destRaidFlags)
+    -- Si el evento es el inicio de un hechizo (puede ser de daño o provocación)
+    local spellId = nil
+    local spellName = "asd"
+    -- if subEvent == "SPELL_CAST_START" then
+    --     spellId = arg12
+    --     spellName = arg13
+    -- end
+    --     -- Hechizos de provocación comunes
+    --     local provokeSpells = {
+    --         -- Guerrero
+    --         [355]   = "Taunt",                -- Provocar (taunt directo)
+    --         [1161]  = "Challenging Shout",    -- Grito desafiante (taunt en área)
+
+    --         -- Druida
+    --         [6795]  = "Growl",                -- Bramido (taunt directo)
+    --         [5209]  = "Challenging Roar",     -- Rugido desafiante (taunt en área)
+
+    --         -- Paladín
+    --         [62124] = "Hand of Reckoning",    -- Mano de expiación (taunt directo)
+    --         [31789] = "Righteous Defense",    -- Defensa recta (taunt hacia aliados)
+
+    --         -- Caballero de la Muerte
+    --         [49576] = "Death Grip",           -- Agarre de la muerte (taunt + atracción)
+
+    --         -- Cazador
+    --         [20736] = "Distracting Shot",     -- Disparo de distracción (taunt a distancia)
+
+    --         -- Mascotas de Cazador (Tenacidad)
+    --         [53477] = "Taunt",                -- Provocación de mascota (taunt directo)
+
+    --         -- Brujo (Mascota: Vacío)
+    --         [3716]  = "Torment",              -- Tormento (taunt del vacío)
+    --     }
+    --     -- Si es un hechizo de provocación
+    --     --if provokeSpells[spellId] then
+    --         -- print(string.format("%s lanzó %s sobre %s, provocando el combate!", srcName, spellName, destName))
+    --     --end
+    -- end
+
+    -- O si la unidad ataca físicamente al boss (evento de daño físico)
+    -- if eventType == "SWING_DAMAGE" then
+        -- Asumir que el daño fue causado por un jugador sobre el boss (dependiendo de las banderas)
+        --if bit.band(srcFlags, COMBATLOG_OBJECT_TYPE_PLAYER) > 0 then
+            --print(string.format("%s atacó físicamente a %s, iniciando el combate!", srcName, destName))
+        --end
+    --end
+    
     -- Filtrar tipos de sub-eventos de combate que no indican inicio de combate real (sanaciones, regeneración de poder, etc.)
     if subEvent == "SPELL_HEAL" or subEvent == "SPELL_PERIODIC_HEAL"
        or subEvent == "SPELL_ENERGIZE" or subEvent == "SPELL_PERIODIC_ENERGIZE" then
@@ -75,6 +176,7 @@ function OnCombatLogEvent(timestamp, subEvent, srcGUID, srcName, srcFlags, srcRa
 
     -- Verificar si el evento involucra a un jefe atacando o siendo atacado por un jugador
     local bossName, playerName = nil, nil
+    
     -- Caso 1: la FUENTE es un jefe y el DESTINO es un jugador (el jefe inicia atacando a un jugador)
     if IsBossUnit(srcGUID) and bit.band(destFlags or 0, 0x00000400) > 0 then  -- 0x00000400 = COMBATLOG_OBJECT_TYPE_PLAYER
         bossName = srcName      -- Nombre del jefe (fuente del evento)
@@ -87,21 +189,24 @@ function OnCombatLogEvent(timestamp, subEvent, srcGUID, srcName, srcFlags, srcRa
         return  -- Si ninguna combinación es jefe vs jugador, no nos interesa este evento para propósitos de activación
     end
 
-    -- Si ya registramos este jefe en la lista de activaciones actuales, no duplicar la entrada
-    if bossActivations[bossName] then
-        return
-    end
-
     -- Registrar la activación del jefe:
     bossActivations[bossName] = playerName
     table.insert(bossHistoryList, 1, { boss = bossName, player = playerName })  -- Insertar al inicio para mantener orden descendente (último pull primero)
 
     -- Actualizar la interfaz gráfica con el nuevo registro (función global definida en BossPullTracker_UI.lua)
-    if subEvent == "SPELL_CAST_START" or subEvent == "SPELL_CAST_SUCCESS" or subEvent == "SWING_DAMAGE" then
+    if subEvent == "SPELL_CAST_START" or subEvent == "SPELL_CAST_SUCCESS" or subEvent == "SWING_DAMAGE" or provokeSpells[spellId] then
         if BossPullTrackerDB and BossPullTrackerDB.bossActivations then
-            local bossName = bossName or destName or srcName or GetUnitName("target") or "Jefe desconocido"
-            local playerName = playerName or srcName or UnitName("player") or "Jugador desconocido"
-            local method = (subEvent == "SWING_DAMAGE") and "autoataque" or (spellName or "desconocido")
+            if not playerName or playerName == "Desconocido" then
+                if groupGUIDToName[srcGUID] then
+                    playerName = groupGUIDToName[srcGUID]
+                elseif groupGUIDToName[destGUID] then
+                    playerName = groupGUIDToName[destGUID]
+                end
+            end
+            local bossName = bossName -- or destName or srcName or GetUnitName("target") or "Jefe desconocido"
+            local playerName = playerName -- (srcFlags and bit.band(srcFlags, 0x00000400) > 0 and srcName) or UnitName("player") or "Jugador desconocido"
+            local method = provokeSpells[spellId] or (subEvent == "SWING_DAMAGE" and "autoataque") or spellName
+            UpdateBossListUI(destName, srcName, method)
         
             -- Guardar activación
             table.insert(BossPullTrackerDB.bossActivations, {
@@ -112,7 +217,7 @@ function OnCombatLogEvent(timestamp, subEvent, srcGUID, srcName, srcFlags, srcRa
             })
 
             -- Actualizar visual
-            UpdateBossListUI(bossName, playerName, method)
+            -- UpdateBossListUI(bossName, playerName, method)
         end
     end
 end
@@ -155,22 +260,22 @@ function OnZoneChanged()
 end
 
 -- Función global: Maneja los gritos de jefes (opcional, podría usarse para detectar inicios de combate mediante textos)
-function OnBossYell(monsterName, message)
-    -- Solo procesar si estamos en instancia de grupo/banda
-    local inInstance, instType = IsInInstance()
-    if not inInstance or not (instType == "party" or instType == "raid") then
-        return
-    end
-    -- Ejemplo simple: si un jefe grita al iniciar combate antes de cualquier registro de combate,
-    -- podríamos notificarlo en la interfaz (no sabemos quién lo activó, este método es informativo).
-    if monsterName and not bossActivations[monsterName] then
-        -- Podemos, por ejemplo, mostrar en la ventana que el jefe ha sido activado (jugador desconocido)
-        bossActivations[monsterName] = "Desconocido"
-        table.insert(bossHistoryList, 1, { boss = monsterName, player = "Desconocido" })
-        UpdateBossListUI(monsterName, "|cffccccccDesconocido|r")  -- Color gris para indicar desconocido
-        -- Nota: Este enfoque agrega la entrada con jugador "Desconocido" porque un grito no identifica quién provocó al jefe.
-    end
-end
+-- function OnBossYell(monsterName, message)
+--     -- Solo procesar si estamos en instancia de grupo/banda
+--     local inInstance, instType = IsInInstance()
+--     if not inInstance or not (instType == "party" or instType == "raid") then
+--         return
+--     end
+--     -- Ejemplo simple: si un jefe grita al iniciar combate antes de cualquier registro de combate,
+--     -- podríamos notificarlo en la interfaz (no sabemos quién lo activó, este método es informativo).
+--     if monsterName and not bossActivations[monsterName] then
+--         -- Podemos, por ejemplo, mostrar en la ventana que el jefe ha sido activado (jugador desconocido)
+--         bossActivations[monsterName] = "Desconocido"
+--         table.insert(bossHistoryList, 1, { boss = monsterName, player = "Desconocido" })
+--         UpdateBossListUI(monsterName, "|cffccccccasd|r")  -- Color gris para indicar desconocido
+--         -- Nota: Este enfoque agrega la entrada con jugador "Desconocido" porque un grito no identifica quién provocó al jefe.
+--     end
+-- end
 
 -- Función global: Envía la lista de activaciones registrada al chat especificado (Decir/Grupo/Banda/Hermandad)
 function OutputActivationsToChat(channel)
@@ -189,6 +294,7 @@ end
 -- Asignar el manejador principal de eventos
 eventFrame:SetScript("OnEvent", function(self, event, ...)
     if event == "PLAYER_LOGIN" then
+        UpdateGroupGUIDMap()
         -- Evento al completar la carga de la interfaz del jugador
         -- Enlazar tablas de la base de datos global (por seguridad, aunque ya se asignaron al cargar SavedVariables)
         bossActivations = BossPullTrackerDB.bossActivations
@@ -209,20 +315,19 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
                 UpdateBossListUI(entry.boss, entry.player)
             end
         end
-
     elseif event == "COMBAT_LOG_EVENT_UNFILTERED" then
         -- Obtener parámetros del evento de combate
         local timestamp, subEvent,
-              srcGUID, srcName, srcFlags, srcRaidFlags,
-              destGUID, destName, destFlags, destRaidFlags, 
-              spellId, spellName , param9, param10, param11, param12= ... -- Capturamos algunos campos adicionales si hiciera falta (spellId, etc.)
+            srcGUID, srcName, srcFlags, srcRaidFlags,
+            destGUID, destName, destFlags, destRaidFlags = arg1, arg2, arg4, arg5, arg6, arg7, arg8, arg9, arg10 ,arg11
+
         -- Verificar entorno: solo proceder si estamos dentro de una instancia de grupo o banda
         local inInstance, instType = IsInInstance()
         if not inInstance or not (instType == "party" or instType == "raid") then
             return  -- Fuera de mazmorra/raid, ignorar todos los eventos de combate
         end
         -- Delegar la lógica específica del evento de combate a la función OnCombatLogEvent
-        OnCombatLogEvent(timestamp, subEvent, srcGUID, srcName, srcFlags, srcRaidFlags, destGUID, destName, destFlags, destRaidFlags, spellId, spellName)
+        OnCombatLogEvent(timestamp, subEvent, srcGUID, srcName, srcFlags, srcRaidFlags, destGUID, destName, destFlags, destRaidFlags)
 
     elseif event == "PLAYER_ENTERING_WORLD" or event == "ZONE_CHANGED_NEW_AREA" then
         -- Eventos de cambio de zona/instancia. 
@@ -234,6 +339,7 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
         end
 
     elseif event == "RAID_ROSTER_UPDATE" or event == "PARTY_MEMBERS_CHANGED" then
+        UpdateGroupGUIDMap()
         -- Eventos que indican cambio en el grupo/banda (p. ej., un jugador abandona el grupo o la banda se disuelve)
         local numRaid = GetNumRaidMembers() or 0
         local numParty = GetNumPartyMembers() or 0
@@ -245,17 +351,17 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
             end
             -- (Si la lista estaba vacía, no es necesario hacer nada especial)
         end
-
-    elseif event == "CHAT_MSG_MONSTER_YELL" then
-        -- Un NPC (posiblemente un jefe) gritó algo
-        local msgText, monsterName = ...
-        OnBossYell(monsterName, msgText)
     end
+    -- elseif event == "CHAT_MSG_MONSTER_YELL" then
+    --     -- Un NPC (posiblemente un jefe) gritó algo
+    --     local msgText, monsterName = ...
+    --     OnBossYell(monsterName, msgText)
+    -- end
 end)
 
 -- Inicializar la base de datos persistente (SavedVariables) al cargar el addon
 if not BossPullTrackerDB then 
-    BossPullTrackerDB = {} 
+    BossPullTrackerDB = {}  
 end
 if not BossPullTrackerDB.bossActivations then BossPullTrackerDB.bossActivations = {} end
 if not BossPullTrackerDB.bossHistoryList then BossPullTrackerDB.bossHistoryList = {} end
