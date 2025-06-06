@@ -1,0 +1,10 @@
+## Interface: 30300
+## Title: BossPullTracker - Registro de Activadores de Jefes
+## Author: TuNombre
+## Version: 1.0
+## Notes: Registra quién activa primero cada jefe en mazmorras y bandas (WotLK 3.3.5a).
+## SavedVariables: BossPullTrackerDB
+
+BossPullTracker_Utils.lua
+BossPullTracker.lua
+BossPullTracker_UI.lua
